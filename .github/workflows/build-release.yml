@@ -222,7 +222,7 @@ jobs:
           sudo mkdir -p /opt/clang
 
           wget -q \
-            https://github.com/sbwml/openwrt-llvm-toolchain/releases/download/22.0.2/clang-22.0.2-x86_64-unknown-linux-gnu.tar.xz
+            https://github.com/MinimaxFlora/istoreos-actions/releases/download/clang-23.0.1/clang-23.0.1-x86_64-unknown-linux-gnu.tar.xz
 
           sudo tar \
             --strip-components=1 \
@@ -245,9 +245,10 @@ jobs:
           git clone \
             --depth=1 \
             -b istoreos-25.12 \
-            https://github.com/istoreos/istoreos.git
+            https://github.com/istoreos/istoreos.git \
+            openwrt
 
-          cd istoreos
+          cd openwrt
 
           cp -f ../scripts/custom-feeds.sh ./
           chmod +x ./custom-feeds.sh
