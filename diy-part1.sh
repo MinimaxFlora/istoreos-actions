@@ -16,6 +16,11 @@ echo "📦 正在添加自定义扩展源..."
 
 # 2. 追加第三方软件源 (按需取消注释并修改下方地址)
 # 格式: src-git <源名称> <Git仓库地址>;<分支名称>
-# echo "src-git custom_feed https://github.com/MinimaxFlora/openwrt_package.git;master" >> feeds.conf.default
+echo "src-git third_party https://github.com/linkease/istore-packages.git;main" >> feeds.conf.default
+echo "src-git diskman https://github.com/jjm2473/luci-app-diskman.git;dev" >> feeds.conf.default
+echo "src-git oaf https://github.com/jjm2473/OpenAppFilter.git;dev8" >> feeds.conf.default
+echo "src-git linkease_nas https://github.com/linkease/nas-packages.git;master" >> feeds.conf.default
+echo "src-git linkease_nas_luci https://github.com/linkease/nas-packages-luci.git;main" >> feeds.conf.default
+echo "src-git jjm2473_apps https://github.com/jjm2473/openwrt-apps.git;main" >> feeds.conf.default
 
 echo "✨ 自定义 Feed 源配置已完成！"
