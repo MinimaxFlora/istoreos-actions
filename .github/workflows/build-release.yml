@@ -4,18 +4,10 @@ on:
   # 允许在 GitHub 仓库的 Actions 页面手动触发
   workflow_dispatch:
 
-  # 允许通过 Repository Dispatch 事件触发
-  repository_dispatch:
-    types: [upstream-update]
-
 jobs:
   build:
     name: 🔨 编译 ZeroWrt
     runs-on: ubuntu-24.04
-
-    # 将 release_info 步骤生成的 Tag 输出给 release Job
-    outputs:
-      release_tag: ${{ steps.release_info.outputs.tag }}
 
     # 仅允许仓库所有者触发
     if: ${{ github.event.repository.owner.id == github.event.sender.id }}
@@ -88,7 +80,7 @@ jobs:
         run: |
           echo "::group::🧹 清理交换空间"
 
-          sudo mkdir -p /home/runner/work/My-OpenWrt-Firmware/My-OpenWrt-Firmware
+          sudo mkdir -p /home/runner/work/istoreos-actions/istoreos-actions
 
           sudo find /opt -mindepth 1 -maxdepth 1 ! -name "*runner*" -exec rm -rf {} \;
 
@@ -142,13 +134,13 @@ jobs:
 
             sudo mount \
               /dev/mapper/github-runner \
-              /home/runner/work/My-OpenWrt-Firmware/My-OpenWrt-Firmware
+              /home/runner/work/istoreos-actions/istoreos-actions
 
             echo "::endgroup::"
           fi
 
           sudo chown -R runner:runner \
-            /home/runner/work/My-OpenWrt-Firmware/My-OpenWrt-Firmware
+            /home/runner/work/istoreos-actions/istoreos-actions
 
           sudo sysctl -w vm.drop_caches=3
 
@@ -173,7 +165,7 @@ jobs:
           sudo rm -rf /etc/apt/sources.list.d
 
           sudo bash -c \
-            "curl -skL https://raw.githubusercontent.com/sbwml/actions/openwrt-build-setup/sources-24.04.list > /etc/apt/sources.list"
+            "curl -skL https://raw.githubusercontent.com/MinimaxFlora/istoreos-actions/refs/heads/istoreos-25.12/scripts/sources-24.04.list > /etc/apt/sources.list"
 
           sudo apt-get update
 
