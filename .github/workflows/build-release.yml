@@ -262,3 +262,267 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+      # ==========================================================
+      # 自定义配置
+      # ==========================================================
+      - name: 📂 自定义配置
+        working-directory: ./openwrt
+        run: |
+          cp -f ../prepare_base.sh ./prepare_base.sh
+          chmod +x ./prepare_base.sh
+          ./prepare_base.sh
+
+      # ==========================================================
+      # 工具链缓存：从 Toolchain_Cache Release 下载并解压
+      # (缓存包由 toolchain-cache.yml 生成: build_dir/dl/staging_dir/tmp，
+      #  上传至滚动 Tag "Toolchain_Cache"，不随上游源码更新而失效)
+      # ==========================================================
+      - name: 🗃️ 下载工具链缓存
+        working-directory: ./openwrt
+        run: |
+          # 缓存文件名须与 toolchain-cache.yml 中生成规则保持一致
+          # 仅支持 x86_64 + musl + GCC 14(如需调整请同步修改 toolchain-cache.yml)
+          TOOLCHAIN_FILE="toolchain_musl_x86_64_gcc-14.tar.zst"
+          # GitHub Actions 运行器位于 GitHub 网络内，直连下载无需代理
+          TOOLCHAIN_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/Toolchain_Cache"
+
+          echo -e "\n\e[1;36m================================================================\e[0m"
+          echo -e "\e[1;33m   🗃️ 工具链缓存恢复 (TOOLCHAIN CACHE RESTORE)\e[0m"
+          echo -e "\e[1;36m================================================================\e[0m"
+          echo -e "  • 缓存文件: ${TOOLCHAIN_FILE}"
+
+          # 下载工具链缓存；不存在时(首次/尚未生成)回退为全量编译
+          if curl -fL --retry 3 --connect-timeout 15 \
+            "${TOOLCHAIN_URL}/${TOOLCHAIN_FILE}" -o toolchain.tar.zst 2>/dev/null; then
+            echo -e "\e[1;32m[📥] Download Toolchain ... 缓存下载成功，正在解压\e[0m"
+            tar -I zstd -xf toolchain.tar.zst || {
+              echo -e "\e[1;31m[❌] 工具链缓存解压失败(文件可能损坏)，请重新运行 toolchain-cache 工作流生成缓存\e[0m"
+              rm -f toolchain.tar.zst
+              exit 1
+            }
+            rm -f toolchain.tar.zst
+            mkdir -p bin
+            # 刷新 mtime，避免 make 因时间戳新旧判断而重新编译工具链
+            echo -e "\e[1;32m[⚙️] Process Toolchain ... 刷新 staging_dir/tmp 时间戳\e[0m"
+            find ./staging_dir -type f -exec touch {} + 2>/dev/null || true
+            find ./tmp -type f -exec touch {} + 2>/dev/null || true
+            echo -e "\e[1;32m[✅] 工具链缓存就绪，将跳过工具链编译\e[0m"
+          else
+            rm -f toolchain.tar.zst
+            echo -e "\e[1;33m[⚠️] 未找到工具链缓存 ${TOOLCHAIN_FILE}\e[0m"
+            echo -e "\e[1;33m[⚠️] 本次将全量编译(含工具链，耗时较长)；建议先在 Actions 手动运行 toolchain-cache 工作流生成缓存\e[0m"
+          fi
+          echo -e "\e[1;36m================================================================\e[0m\n"
+      
+      # ==========================================================
+      # 加载自定义配置
+      # ==========================================================
+      - name: ⚙️ 加载自定义配置
+        working-directory: ./openwrt
+        run: |
+          cp "$GITHUB_WORKSPACE/x86_64.config" .config
+          cp -rf "$GITHUB_WORKSPACE/files" ./
+          find ./files -type d -exec chmod +x {} \;
+          make defconfig
+
+      # ==========================================================
+      # 下载软件包
+      # ==========================================================
+      - name: 📚 下载软件包
+        run: |
+          cd openwrt
+
+          make download -j8
+
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      # ==========================================================
+      # 编译固件
+      # ==========================================================
+      - name: 🔨 编译固件
+        env:
+          CURRENT_DATE: ${{ env.CURRENT_DATE }}
+        run: |
+          cd openwrt
+          sed -i "/BUILD_DATE/d" package/base-files/files/usr/lib/os-release
+          sed -i "/BUILD_ID/aBUILD_DATE=\"${CURRENT_DATE}\"" package/base-files/files/usr/lib/os-release
+          echo "$(nproc) thread compile"
+
+          make -j$(nproc) || make -j1 V=s
+
+      # ==========================================================
+      # 整理固件与生成 Release 说明
+      # ==========================================================
+      - name: 📦 整理固件与生成 Release 说明
+        id: release_info
+        run: |
+          cd openwrt/bin/targets/*/*
+
+          rm -rf packages
+
+          FIRMWARE_DIR="${GITHUB_WORKSPACE}/firmware_out"
+          mkdir -p "$FIRMWARE_DIR"
+
+          # Release Tag 已在上一步「🏷️ 生成发布 Tag」生成并注入环境变量，此处直接复用
+          BUILD_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+
+          # 输出给 build Job
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+          # ======================================================
+          # 只保留指定的 4 个 x86-64 固件
+          # ======================================================
+          FIRMWARE_FILES=(
+            "zerowrt-x86-64-generic-ext4-combined.img.gz"
+            "zerowrt-x86-64-generic-ext4-combined-efi.img.gz"
+            "zerowrt-x86-64-generic-squashfs-combined.img.gz"
+            "zerowrt-x86-64-generic-squashfs-combined-efi.img.gz"
+          )
+
+          echo "::group::🔍 检查固件文件"
+
+          for file in "${FIRMWARE_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ 固件文件不存在: $file"
+              exit 1
+            fi
+
+            echo "✅ $file"
+          done
+
+          echo "::endgroup::"
+
+          # ======================================================
+          # 只对这 4 个固件生成 SHA256
+          # ======================================================
+          sha256sum "${FIRMWARE_FILES[@]}" > sha256sums.txt
+
+          # ======================================================
+          # 生成 Release Notes
+          # ======================================================
+          cat <<EOF > release_notes.md
+          # 🚀 ZeroWrt 固件发布报告
+
+          | 配置项目 | 详细信息 |
+          | :--- | :--- |
+          | 🕒 **编译时间** | \`${BUILD_DATE}\` |
+          | 🏷️ **发布标签** | \`${RELEASE_TAG}\` |
+          | 💻 **目标平台** | \`x86-64 Generic\` |
+          | ⚡ **默认 IP** | \`192.168.1.1\` |
+          | 🔑 **默认密码** | \`none (无密码)\` |
+
+          ### 📦 固件列表
+
+          | 固件 | 类型 |
+          | :--- | :--- |
+          | \`zerowrt-x86-64-generic-ext4-combined.img.gz\` | EXT4 / BIOS |
+          | \`zerowrt-x86-64-generic-ext4-combined-efi.img.gz\` | EXT4 / EFI |
+          | \`zerowrt-x86-64-generic-squashfs-combined.img.gz\` | SquashFS / BIOS |
+          | \`zerowrt-x86-64-generic-squashfs-combined-efi.img.gz\` | SquashFS / EFI |
+
+          ### 🔐 SHA256 校验码
+
+          \`\`\`text
+          $(cat sha256sums.txt)
+          \`\`\`
+
+          > 💡 **提示**：建议刷机前核对文件 SHA256 校验码，确保固件传输完整无损。
+          EOF
+
+          # ======================================================
+          # 只复制 4 个固件 + SHA256 + Release Notes
+          # ======================================================
+          cp "${FIRMWARE_FILES[@]}" "$FIRMWARE_DIR/"
+          cp sha256sums.txt "$FIRMWARE_DIR/"
+          cp release_notes.md "$FIRMWARE_DIR/"
+
+          # 附带 diy-part3.sh 生成的 OTA 索引与 kmod 压缩包（位于 openwrt/ 目录）
+          cp -f "$GITHUB_WORKSPACE/openwrt/ota.json" "$FIRMWARE_DIR/" 2>/dev/null || true
+
+          if [ -n "$KMOD_TAR_NAME" ] && [ -f "$GITHUB_WORKSPACE/openwrt/${KMOD_TAR_NAME}" ]; then
+            cp -f "$GITHUB_WORKSPACE/openwrt/${KMOD_TAR_NAME}" "$FIRMWARE_DIR/"
+            echo "✅ kmod 压缩包: ${KMOD_TAR_NAME}"
+          else
+            echo "⚠️ 未找到 kmod 压缩包（KMOD_TAR_NAME=${KMOD_TAR_NAME:-空}），本次将只发布固件与 OTA 索引"
+          fi
+
+          echo -e "\n\e[1;36m=================================================================\e[0m"
+          echo -e "\e[1;33m       📦 固件产物整理完毕与发布准备报告 (RELEASE SUMMARY)\e[0m"
+          echo -e "\e[1;36m=================================================================\e[0m"
+
+          echo -e "\e[1;32m[📁 固件输出路径]\e[0m : $FIRMWARE_DIR"
+          echo -e "\e[1;32m[🏷️ 发布 Tag 标签]\e[0m : \e[1m${RELEASE_TAG}\e[0m"
+
+          echo -e "\n\e[1;35m[📦 固件文件]\e[0m"
+
+          for file in "${FIRMWARE_FILES[@]}"; do
+            SIZE=$(du -h "$file" | awk '{print $1}')
+            echo "  │ $file [$SIZE]"
+          done
+
+          echo -e "\n\e[1;35m[📄 SHA256 校验码]\e[0m"
+          cat sha256sums.txt | sed 's/^/  │ /'
+
+          echo -e "\n\e[1;35m[📁 Artifact 内容]\e[0m"
+          ls -lh "$FIRMWARE_DIR"
+
+          echo -e "\e[1;36m=================================================================\e[0m\n"
+
+      # ==========================================================
+      # 上传固件 Artifact
+      # ==========================================================
+      - name: 📤 上传固件 Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZeroWrt_Firmware
+          path: |
+            ./firmware_out/*
+
+  # ============================================================
+  # GitHub Release
+  # ============================================================
+  release:
+    name: 🚀 发布 GitHub Release
+    needs: build
+
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+      actions: read
+
+    if: needs.build.result == 'success'
+
+    steps:
+      # ========================================================
+      # 下载固件 Artifact
+      # ========================================================
+      - name: 📥 下载固件 Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ZeroWrt_Firmware
+          path: ./firmware
+
+      # ========================================================
+      # 发布到 Releases
+      # ========================================================
+      - name: 🚀 发布到 Releases
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          tag_name: ZeroWrt-X86_64
+          name: ZeroWrt-X86_64
+          body_path: ./firmware/release_notes.md
+          overwrite_files: true
+
+          files: |
+            ./firmware/zerowrt-x86-64-generic-ext4-combined.img.gz
+            ./firmware/zerowrt-x86-64-generic-ext4-combined-efi.img.gz
+            ./firmware/zerowrt-x86-64-generic-squashfs-combined.img.gz
+            ./firmware/zerowrt-x86-64-generic-squashfs-combined-efi.img.gz
+            ./firmware/sha256sums.txt
+            ./firmware/ota.json
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
